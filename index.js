@@ -1,0 +1,398 @@
+const express = require('express')
+const body_parser = require('body-parser')
+const { Patient } = require('./models/patient')
+const { Donor } = require('./models/donor')
+const { User } = require('./models/users')
+const axios = require('axios')
+var app = express()
+
+app.set('view engine', 'ejs');
+
+app.use(body_parser.json())
+app.use(body_parser.urlencoded({ extended: true }))
+
+app.use(express.static('public'))
+
+app.get('/', (req, res, next) => {
+    res.sendFile('index.html')
+    return
+})
+
+app.post('/login', async(req, res, next) => {
+    console.log(`login request received : ${req.body.userid} -  ${req.body.password}`)
+    User.find({loginId : req.body.userid}, (err, document) => {
+        if (err) {
+            console.error(err);
+        } else {
+            if (document.length > 0) {
+                console.log(`got ${document}`)
+                if (document[0]._doc.password == req.body.password) {
+                    res.status(200).send({"msg":"success"})
+                    console.log("Login successfull")
+                    return
+                }else{
+                    console.log("wrong credentials")
+                    res.status(400).send("Wrong Login Id or Password")
+                    return
+                } 
+            } else {
+                console.log(document.length)
+                res.status(400).send("Wrong Login Id or Password")
+                return
+            }
+        }
+    })
+})
+
+app.post('/get_dashboard_details', async(req, res, next) => {
+    var finalData = {};
+    Patient.countDocuments()
+    .then(patients => {
+        finalData.totalPatients = patients
+        
+        Donor.countDocuments()
+        .then(donors => {
+            finalData.totalDonors = donors
+            finalData.currentDataset = finalData.totalPatients + finalData.totalDonors;
+            
+            Patient.countDocuments({ linkedWith: { $ne: "" } })
+            .then(paired =>{
+                finalData.paired = paired;
+                
+                Patient.aggregate([
+                    {
+                        $group: {
+                            _id: '$bloodGroup',
+                            count: { $sum: 1 },
+                        }
+                    }
+                ]).then(bloodListPatient =>{
+                    finalData.bloodListPatient = bloodListPatient;
+
+                    Donor.aggregate([
+                        {
+                            $group: {
+                                _id: '$bloodGroup',
+                                count: { $sum: 1 },
+                            }
+                        }
+                    ]).then(bloodListDonor =>{
+                        finalData.bloodListDonor = bloodListDonor;
+
+                        Patient.aggregate([
+                            {
+                                $group: {
+                                    _id: '$gender',
+                                    count: { $sum: 1 },
+                                }
+                            }
+                        ]).then(patientGender =>{
+                            finalData.patientGender = patientGender;
+                            
+                            Donor.aggregate([
+                                {
+                                    $group: {
+                                        _id: '$gender',
+                                        count: { $sum: 1 },
+                                    }
+                                }
+                            ]).then(donorGender =>{
+                                finalData.donorGender = donorGender;
+                                res.status(200).send({finalData})
+                            })
+                        })
+                    })
+                })
+            })
+        })
+    })
+    .catch(err => {
+        console.error("Error:", err);
+    });
+})
+
+app.post('/register_patient', async(req, res, next) => {
+    var body = req.body
+    if (body.patientId && body.fname && body.lname && body.age && body.gender && body.language && body.phone && body.emergencyContact && body.address && body.medicalHistory &&
+        body.familyHistory && body.medications && body.bloodGroup && body.scr && body.egfr && body.hba1c && body.hospital) {
+
+        Patient.find( {patientId: body.patientId }, (err, document) => {
+            if (err) {
+                console.error(err);
+            } else {
+                if (document.length > 0) {
+                    res.status(400).send('Patient Id already exists. Please try using different id')
+                }else{
+                    var options = {
+                        method: 'POST',
+                        url: 'http://organdonation.pythonanywhere.com/getOrganCluster',
+                        headers: {
+                            Accept: '*/*',
+                            'Content-Type': 'application/json'
+                        },
+                        data: {
+                            scr: body.scr,
+                            egfr: body.egfr,
+                            hba1c: body.hba1c
+                        }
+                    };
+            
+                    axios.request(options).then(function(response) {
+                        var newpatient = new Patient({
+                            patientId: body.patientId,
+                            name: body.fname + " " + body.lname,
+                            age: body.age,
+                            gender: body.gender,
+                            prefered_language: body.language,
+                            email: body.email,
+                            phoneNo: body.phone,
+                            emergencyPhoneNo: body.emergencyContact,
+                            address: body.address,
+                            medicalHistory: body.medicalHistory,
+                            familyHistory: body.familyHistory,
+                            currentMedication: body.medications,
+                            physicianName: body.physicianName,
+                            physicianContact: body.physicianContact,
+                            bloodGroup: body.bloodGroup,
+                            heartRate: body.heartRate,
+                            respiratoryRate: body.respiratoryRate,
+                            sCr: body.scr,
+                            eGFR: body.egfr,
+                            HbA1c: body.hba1c,
+                            linkedWith: "",
+                            hospital: body.hospital,
+                            resultCluster: response.data
+                        })
+            
+                        newpatient.save().then((doc) => {
+                            pid = doc._id;
+                            res.status(200).send({ "msg": "Patient Registered Successfully", pid })
+                            return
+                        }).catch((e) => {
+                            res.status(400).send('Error while saving record')
+                            return
+                        })
+                    }).catch(function(error) {
+                        res.status(400).send('Unexpected error occured! Please try again')
+                        return
+                    });
+                }
+            }
+        })
+    } else {
+        res.status(400).send('Fields mark with * are important')
+        return
+    }
+})
+
+app.post('/register_donor', (req, res, next) => {
+    var body = req.body
+    if (body.donorId && body.fname && body.lname && body.age && body.gender && body.language && body.phone && body.emergencyContact && body.address && body.medicalHistory &&
+        body.familyHistory && body.medications && body.bloodGroup && body.scr && body.egfr && body.hba1c && body.bloodCellCount &&
+        body.diabetesMillitus && body.hemoglobin && body.pusCell && body.albunimDisorderSeverity && body.appet && body.hospital) {
+                
+        Donor.find( {donorId: body.donorId }, (err, document) => {
+            if (err) {
+                console.error(err);
+            } else {
+                if (document.length > 0) {
+                    res.status(400).send('Donor Id already exists. Please try using different id')
+                    return
+                }
+                else{
+                    var options = {
+                        method: 'POST',
+                        url: 'http://organdonation.pythonanywhere.com/getDiseaseStatus',
+                        headers: {
+                            Accept: '*/*',
+                            'Content-Type': 'application/json'
+                        },
+                        data: {
+                            bloodCellCount: body.bloodCellCount,
+                            diabetesMillitus: body.diabetesMillitus,
+                            hemoglobin: body.hemoglobin,
+                            pusCell: body.pusCell,
+                            albunimDisorderSeverity: body.albunimDisorderSeverity,
+                            appet: body.appet
+                        }
+                    };
+            
+                    axios.request(options).then(function(response) {
+                        if (response.data == 0) {
+                            var options = {
+                                method: 'POST',
+                                url: 'http://organdonation.pythonanywhere.com/getOrganCluster',
+                                headers: {
+                                    Accept: '*/*',
+                                    'Content-Type': 'application/json'
+                                },
+                                data: {
+                                    scr: body.scr,
+                                    egfr: body.egfr,
+                                    hba1c: body.hba1c
+                                }
+                            };
+            
+                            axios.request(options).then(function(response) {
+                                var newDonor = new Donor({
+                                    donorId: body.donorId,
+                                    name: body.fname + " " + body.lname,
+                                    age: body.age,
+                                    gender: body.gender,
+                                    prefered_language: body.language,
+                                    email: body.email,
+                                    phoneNo: body.phone,
+                                    emergencyPhoneNo: body.emergencyContact,
+                                    address: body.address,
+                                    medicalHistory: body.medicalHistory,
+                                    familyHistory: body.familyHistory,
+                                    currentMedication: body.medications,
+                                    physicianName: body.physicianName,
+                                    physicianContact: body.physicianContact,
+                                    bloodGroup: body.bloodGroup,
+                                    sCr: body.scr,
+                                    eGFR: body.egfr,
+                                    HbA1c: body.hba1c,
+                                    bloodCellCount: body.bloodCellCount,
+                                    diabetesMillitus: body.diabetesMillitus,
+                                    hemoglobin: body.hemoglobin,
+                                    pusCell: body.pusCell,
+                                    albunimDisorderSeverity: body.albunimDisorderSeverity,
+                                    appet: body.appet,
+                                    hospital: body.hospital,
+                                    booked: false,
+                                    resultCluster: response.data
+                                })
+                                newDonor.save().then((doc) => {
+                                    donerId = doc._id;
+                                    res.status(200).send({ "msg": "Donor is Compatiable and Registered Successfully", donerId })
+                                    return
+                                }).catch((e) => {
+                                    res.status(400).send('Error while saving record')
+                                    return
+                                })
+                            }).catch(function(error) {
+                                console.error(error);
+                                res.status(400).send('Unexpected error occured! Please try again')
+                                return
+                            });
+                        } else {
+                            res.status(400).send("Sorry, Donor is not compatible for donation")
+                            return
+                        }
+                    }).catch(function(error) {
+                        console.error(error);
+                        res.status(400).send('Unexpected error occured! Please try again')
+                        return
+                    });
+                }
+            }
+        })
+    } else {
+        res.status(400).send('Fields mark with * are important')
+        return
+    }
+
+})
+
+app.post('/get_donor_list', async(req, res, next) => {
+    Donor.find().select('_id donorId name age address bloodGroup insertedDate').then((doc) => {
+        res.status(200).send({ "msg": "Donor List fetched", doc})
+        return
+    }).catch((e) => {
+        console.log(e)
+        res.status(400).send('Error while fetching donor records')
+        return
+    })
+})
+
+app.post('/get_patient_list', async(req, res, next) => {
+    Patient.find().select('_id patientId name age address bloodGroup insertedDate').then((doc) => {
+        res.status(200).send({ "msg": "Patient List fetched", doc})
+        return
+    }).catch((e) => {
+        console.log(e)
+        res.status(400).send('Error while fetching donor records')
+        return
+    })
+})
+
+app.get('/get_patient_details/:id', async(req, res, next) => {
+    Patient.findById(req.params.id, (err, document) => {
+        if (err) {
+            console.error(err);
+        } else {
+            if (document) {
+                if (document.linkedWith == "") {
+                    if(document.bloodGroup == 'A+'){ compatibleBloodGroup = ['A+', 'A-', 'O+', 'O-'] }
+                    if(document.bloodGroup == 'A-'){ compatibleBloodGroup = ['A-', 'O-'] }
+                    if(document.bloodGroup == 'B+'){ compatibleBloodGroup = ['B+', 'B-', 'O+', 'O-'] }
+                    if(document.bloodGroup == 'B-'){ compatibleBloodGroup = ['B-', 'O-'] }
+                    if(document.bloodGroup == 'AB+'){ compatibleBloodGroup = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'] }
+                    if(document.bloodGroup == 'AB-'){ compatibleBloodGroup = ['AB-', 'A-', 'B-', 'O-'] }
+                    if(document.bloodGroup == 'O+'){ compatibleBloodGroup = ['O+', 'O-'] }
+                    if(document.bloodGroup == 'O-'){ compatibleBloodGroup = ['O-'] }
+    
+                    Donor.find({
+                        resultCluster: document.resultCluster,
+                        bloodGroup: {
+                            $in: compatibleBloodGroup
+                        },
+                        booked: false
+                    }).then((availableDonors) =>{
+                        if (availableDonors) {
+                            document.donorsList = JSON.stringify(availableDonors)
+                            res.render('viewPatientDetails', { document });
+                            return
+                        }
+                    })
+                }else{
+                    Donor.findById(document.linkedWith, (err, document) => {
+                        if (err) {
+                            console.error(err);
+                        } else {
+                            if (document) {
+                                document.linkedWithId = document._id
+                                document.linkedWithUserId = document.donorId
+                                res.render('viewPatientDetails', { document });
+                                return
+                            } else {
+                                console.log('Document not found');
+                            }
+                        }
+                    })
+                }
+            }
+        }
+    })
+})
+
+app.post('/get_paired_list', async(req, res, next) => {
+    Patient.find({ linkedWith: { $ne: "" } })
+    .select('_id patientId linkedWith')
+    .then(patients => {
+        const promises = patients.map(patient => {
+            return Donor.findById(patient.linkedWith)
+                .select('_id donorId')
+                .then(donor => {
+                    return {
+                        patientId: patient.patientId,
+                        patientDbId: patient._id,
+                        donorId: donor.donorId,
+                        donorDbId: donor._id
+                    };
+                });
+        });
+        return Promise.all(promises);
+    })
+    .then(donorRecords => {
+        res.status(200).send({ "msg": "Paired List fetched", donorRecords})
+    })
+    .catch(err => {
+        console.error("Error:", err);
+    });
+})
+
+app.listen(3000, () => {
+    console.log('listening on port 3000')
+})
